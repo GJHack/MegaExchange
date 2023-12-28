@@ -12,7 +12,10 @@
     "@strapi/design-system": "^1.6.3",
     "@strapi/helper-plugin": "^4.6.0",
     "@strapi/icons": "^1.6.3",
-    "prop-types": "^15.7.2"
+    "body-parser": "^1.20.2",
+    "prop-types": "^15.7.2",
+    "strapi-utils": "^3.6.11",
+    "unzipper": "^0.10.14"
   },
   "devDependencies": {
     "react": "^18.2.0",
