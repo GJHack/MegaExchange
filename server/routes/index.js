@@ -1,10 +1,8 @@
 
-
+// /exchange?type=catalog&mode=checkauth
 const fs = require("fs");
 
 module.exports = [
-  //Старый роут, сейчас не используется
-  //Так же надо будет удалить контроллер
   {
     method: 'GET',
     path: '/',
@@ -14,8 +12,9 @@ module.exports = [
       middlewares: [],
     }
   },
+  /*
 
-  //РОУТ ДЛЯ php отчета о сохранение файла.
+   */
   {
     method: 'GET',
     path: '/new_files',
