@@ -5,7 +5,7 @@ const fs = require('fs')
 
 function init(ctx) {
   console.log('Параметры передачи данных, переданы в 1С')
-  ctx.body = "zip=yes\nfile_limit=204800"
+  ctx.body = "zip=yes\n"
 }
 
 
