@@ -4,9 +4,9 @@ const fs = require('fs')
 const path = require('node:path');
 const xmlParser = require('xml2json');
 
-const {logger} = require('./workers/mainWorkers');
-const {deleteNoUpdate} = require('./workers/strapiWorkers');
-const {unzip, searchInFolder, getAllFiles} = require('./workers/filesWorkers')
+
+
+const {logger} = require('./mainWorkers');
 
 const ABS_PATH = "/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/"
 
@@ -30,7 +30,6 @@ module.exports = {
     const {type, mode, sessid, filename} = await ctx.request.query;
 
     if(filename) {
-
       console.log("Новые данные от 1С...Поиск...")
       console.log(filename)
 
@@ -53,7 +52,7 @@ module.exports = {
             console.log(`Ообнаружено товаров: ${await searchImportXMLs.length}`);
 
             if(await searchImportXMLs) {
-              deleteNoUpdate();
+              await deleteNoUpdate();
             }
           }
         }
@@ -64,6 +63,254 @@ module.exports = {
 
   }
 
+/**
+ * @description Удаление товаров, которые не были в обновлении.
+ * @returns {boolean}
+ */
+async function deleteNoUpdate() {
+
+  const date = new Date().toLocaleString("ru-RU", {
+    timeZone: "Asia/Vladivostok",
+  });
+  const dateClean = date.slice(0, 10).split("/");
+  const dateISOCompat = [dateClean[2], dateClean[0], dateClean[1]].join("-");
+
+  const noUpdateEntries = await strapi.entityService.findMany('api::product.product', {
+    filters: {
+      updateAt: {
+        $ne: dateISOCompat,
+      },
+      createdAt: {
+        $ne: dateISOCompat
+      }
+    },
+  });
+
+  console.log(`Помечено на удаление: ${noUpdateEntries}`)
+
+  const deletePromises = await noUpdateEntries.map(async entry => {
+
+    try {
+      return await strapi.entityService.delete('api::product.product', entry.id);
+    } catch (e) {
+      console.log("Удаление не вышло.")
+      console.log(entry)
+    }
+
+  });
+
+  await Promise.all(deletePromises);
+
+  console.log(`Удалено ${noUpdateEntries.length} товаров, обновленных "не сегодня." :: AFTER WORK WITH FILE`);
+
+  return noUpdateEntries;
+}
+
+/**
+ * @description Распаковка файлов от 1С .zip
+ * @param {String} filepath - Путь до файла
+ * @param {String} fileName - Имя файла
+ * @param {String} abspath - Абсолютный путь до папки
+ * @returns {boolean}
+ */
+async function unzip(filePath = "",absPath = "/", fileName = "text.zip") {
+
+  if(!filePath || typeof filePath !== "string") return
+
+    //console.log("старт распаковки....")
+    const newFolderName = fileName.split('.')[0];
+    //console.log("Файл будет разархивирован по пути: " + newFolderName)
+
+    const promise = new Promise((resolve, reject) => {
+      try {
+       const readStream = fs.createReadStream(filePath)
+             readStream.pipe(unzipper.Extract({path: absPath + newFolderName}))
+             readStream.on("close", () => {
+              console.log("Архив распакован. Приступаем к парсингу данных");
+              resolve(true)
+             });
+      } catch (e) {
+        console.log("!!!ОШИБКА РАСПАКОВКИ АРХИВА 1С!!! controllers: file_cheker.js func: unzip");
+        reject(false);
+      } finally {
+        //
+      }
+    })
+
+  return await promise;
+
+}
+
+/**
+ * @description Поиск по папке
+ * @param {Context} ctx
+ * @param {String} filePath - Путь до файла
+ * @param {String} fileName - Имя файла
+ * @param {String} extension - Расширение файла ( по дефолту будет искать папки )
+ * @returns {boolean}
+ */
+async function searchInFolder(ctx, filePath = "", fileName = "text", extension = "",getAllNames = false) {
+  if(!filePath || typeof filePath !== "string") return
+
+  const searchPath = (extension) ? filePath : filePath + fileName;
+
+  try{
+    if(!extension) {
+     // console.log(`Поиск папки !  ${searchPath}`)
+      if(fs.existsSync(searchPath)) {
+        //console.log(`Папка по пути ${searchPath} cуществует`)
+        ctx.body = JSON.stringify({
+          error: false,
+          result: true,
+          data: "success"
+        })
+        return true
+      } else {
+        console.log(`Такой папки по пути - ${searchPath} не существует! ${fs.existsSync(searchPath)}`);
+        return false;
+      }
+    } else {
+
+      if(!getAllNames) {
+        console.log("Получение одиночного файла")
+
+        //console.log(`Поиск файла в  ${searchPath}`)
+        const promise = new Promise((resolve, reject) => {
+          fs.readdirSync(searchPath).map(checkName => {
+            const formatSearchString = (extension) ? "." + extension : extension
+            const checkString = fileName + formatSearchString
+            if(checkName === checkString) {
+              console.log(`
+                  "Файл" с именем ${fileName} найден!
+                     `)
+              resolve(true);
+            }
+          })
+        });
+        return await promise
+      } else {
+
+      }
+
+    }
+  } catch(e) {
+    console.log(e)
+    return false;
+  }
+
+}
+
+/**
+ * @description Получение всех файлов внутри найденой папки
+ */
+async function getAllFiles(absPath = "/", folderName = "test") {
+
+  const searchPath = absPath + folderName;
+
+  const promise = new Promise(async (resolve, reject) => {
+    console.log("Получение всех файлов в папке.")
+    const allFileNames = []
+
+    fs.readdirSync(searchPath).map(async checkName => {
+
+      const checkString = folderName
+      const checkFolder = (typeof checkName.split('.')[1] != "undefined") ? true : false;
+
+      if(checkFolder) {
+        let parseResult = await parseXML(`${searchPath}/${checkName}`, folderName);
+        allFileNames.push({
+          name: checkName,
+          dir: searchPath,
+          path: `/usr/share/nginx/html/back/public${searchPath}/${checkName}`,
+          jsonData: await parseResult
+        })
+        if(await parseResult)
+          resolve(allFileNames)
+      } else {
+        console.log(`Среди файлов обнаружена папка: ${checkName}`)
+      }
+    })
+
+  });
+
+  return await promise;
+}
+
+/**
+ * @description Парсинг XML в getAllFiles()
+ */
+async function parseXML(path = "/", checkFolder = "") {
+  let result, parseMode, productsList, file2;
+
+  console.log(`Путь до файла с xml: ${path}`)
+  try {
+
+    file2 = fs.readFileSync(path, (file) => file)
+
+    result = xmlParser.toJson(file2).toString('utf-8');
+
+    result = result.replaceAll("$t",'t').replaceAll("ПакетПредложени�",'ПакетПредложений').replaceAll('\t','').replaceAll('\n','')
+
+    console.log("РЕЗУЛЬТАТ ПАРСИНГА и преобразования в utf-8 ( END_TYPE: JSON )")
+
+    result = JSON.parse(result)
+
+    delete result.t;
+
+  } catch (e) {
+    console.log("ОШИБКА В ПОЛУЧЕНИИ ДАННЫХ ПРИ СОЗДАНИИ JSON")
+    console.log(JSON.parse(result))
+    return ''
+  }
+
+
+  const testObjectProduct = {
+    name: ''
+  }
+  try {
+    ////ТУТ НАЧиНАЕТСЯ РАСПАРС JSONа с ТОВАРАМИ. #КАТАЛОГ
+      parseMode =  (typeof result['КоммерческаяИнформация']['Каталог'] != 'undefined') ? "catalog" : "sales"
+
+      productsList = (parseMode == "catalog")
+        ?
+      result['КоммерческаяИнформация']['Каталог']['Товары']['Товар']
+        :
+      result['КоммерческаяИнформация']['ПакетПредложений']['Предложения']['Предложение']
+
+      console.log("PARSE MODE: " + parseMode)
+
+      if(parseMode == "sales") {
+        //console.log(result['КоммерческаяИнформация']['ПакетПредложений']['Предложения']['Предложение'])
+      }
+
+  } catch(e) {
+
+    console.log("ERROR: ОШИБКА В ПОЛУЧЕНИИ ДАННЫХ ИЗ РАСПАРСЕННОГО XML. -> ОТСУТСТВИЕ КАТАЛОГА")
+    console.log("PARSE MODE: " + parseMode)
+
+    return false;
+  }
+
+
+  ////Проверяем категории и создаем новые если не найдено совпадений
+  try {
+    if(parseMode == "catalog")
+      await createCatalog(productsList, checkFolder, result['КоммерческаяИнформация']['Классификатор']['Группы']['Группа'])
+    else
+      await salesWorking(productsList, result['КоммерческаяИнформация']['ПакетПредложений']['Склады'])
+  } catch(error) {
+    console.log("ERROR: Отсутствуют группы...Абортаем обмен")
+    return false
+  }
+
+  ////Проверяем товары и создаем новые если не найдено совпадений
+
+  //Создаем категории;
+
+  //console.log(result['КоммерческаяИнформация']['Каталог']['Товары']['Товар'][0]['БазоваяЕдиница']['Пересчет'])
+  //console.log(testObjectProduct)
+  return await result;
+}
 
 /**
  * @description Создание каталога
@@ -134,7 +381,7 @@ const createCatalog = async (data = [{}], foldername = '', groups = false) => {
 
       } catch(e) {
         console.log(e)
-        console.log("Ошибка в обновлении категории! file: IMPORT")
+        console.log("EROOR: Ошибка в обновлении категории! file: IMPORT")
       }
 
       } else {
@@ -289,19 +536,19 @@ const createProduct = async (data = { }, category = {}, foldername2 = '') => {
 
     if(!data) return false;
 
-    return new Promise( async (resolve, reject) => {
+  return new Promise( async (resolve, reject) => {
+
+      const entries = await strapi.entityService.findMany('api::product.product', {
+        fields: ['id1c'],
+        filters: { id1c: data['Ид'] },
+      })
 
       //await logger(JSON.stringify(data)) //log
 
       const groupsToConnect = [];
 
+
       try {
-
-        const entries = await strapi.entityService.findMany('api::product.product', {
-          fields: ['id1c'],
-          filters: { id1c: data['Ид'] },
-        })
-
         if(typeof await entries[0] == 'undefined') {
 
           try {
@@ -372,52 +619,54 @@ const createProduct = async (data = { }, category = {}, foldername2 = '') => {
             console.log("Все группы товара: " + groupsToConnect.toString())
 
             let noFormatString = (data['Картинка']) ? data['Картинка'] : null;
+            let arrayImages = [];
 
-            let arrayImages = []
-
-            if(typeof noFormatString == "string") {
-              noFormatString.split(',')
-              if(Array.isArray(noFormatString) && typeof noFormatString[0] != 'undefined')  {
-                arrayImages = [...noFormatString[0]];
+            if (typeof noFormatString === "string") {
+              noFormatString = noFormatString.split(',');
+              if (Array.isArray(noFormatString) && typeof noFormatString[0] !== 'undefined') {
+                arrayImages = [...noFormatString];
               }
             }
-            if(typeof arrayImages[0] == 'undefined') arrayImages.push(noFormatString)
+            if (typeof arrayImages[0] === 'undefined') arrayImages.push(noFormatString);
 
-            if(Array.isArray(arrayImages[0])) {
-              arrayImages = arrayImages[0]
+            if (Array.isArray(arrayImages[0])) {
+              arrayImages = arrayImages[0];
             }
-            /* Создание нового товара через внутреннее api */
 
-            console.log("============================")
-            console.log("Наименование: ")
-            console.log((data['Наименование']) ? `${data['Наименование']}` : "Нет наименования",)
-            console.log("Картинка: ")
-            console.log((noFormatString) ? `/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/${foldername2}/${arrayImages[0]}` : null)
-            console.log("============================")
+            console.log("============================");
+            console.log("Наименование: ");
+            console.log((data['Наименование']) ? `${data['Наименование']}` : "Нет наименования");
+            console.log("Картинки: ");
+            console.log(arrayImages.map(img => `/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/${foldername2}/${img}`));
+            console.log("============================");
 
             const creatorProduct = await strapi.entityService.create('api::product.product', {
               data: {
                 title: (data['Наименование']) ? `${data['Наименование']}` : "Нет наименования",
-                description: (typeof data['Описание'] == 'string') ?  `${data['Описание'] }`: "Нет описания",
-                id1c:  (data['Ид']) ? `${data['Ид']}` : null,
-                imgs: (image) ? await strapi.plugins['upload'].services.upload.upload(
-                  { data: {fileInfo: {}}, files: {
-                      path: (noFormatString) ? path.resolve(`/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/${foldername2}/${arrayImages[0]}`): null, // Put your file path
-                      name: "${data['Картинка']",
-                      type: 'image/jpg'
-                    }}
-                ) : null,
-                //stock: ( data['Количество']) ?  data['Количество'] : "Уточнять",
-                //storeplace: ( data['Город']) ?  data['Город'] : "Склад неизвестен",
+                description: (typeof data['Описание'] === 'string') ? `${data['Описание']}` : "Нет описания",
+                id1c: (data['Ид']) ? `${data['Ид']}` : null,
+                imgs: await Promise.all(arrayImages.map(async (imagePath) => {
+                  if (imagePath) {
+                    const uploadedImage = await strapi.plugins['upload'].services.upload.upload({
+                      data: { fileInfo: {} },
+                      files: {
+                        path: path.resolve(`/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/${foldername2}/${imagePath}`),
+                        name: imagePath,
+                        type: 'image/jpg'
+                      }
+                    });
+                    return uploadedImage[0];
+                  }
+                  return null;
+                })),
                 quantitySales: '0',
-                //price:  ( data['Цена']) ?  data['Цена'] : 0,
                 categories: {
                   connect: [...groupsToConnect]
                 }
-                //priceOpt:  ( data['ЦенаОпт']) ?  data['ЦенаОпт'] : 0,
               },
-              populate: ['categories']
+              populate: ['categories', 'imgs']
             });
+
             if(arrayImages) {
               console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!ТОВАР СОЗДАН IMPORT FILE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
               console.log("Товар создан")
@@ -425,15 +674,18 @@ const createProduct = async (data = { }, category = {}, foldername2 = '') => {
               console.log(arrayImages)
             }
             resolve(await creatorProduct)
+
           } catch(e) {
             console.log("!!!!!!!!!!!!!!Ошибка создания товара!!!!!!!!!!!!")
             console.log(e)
           }
+
+
         } else {
+
           /* Обновление существующего товара через внутреннее api */
           if(typeof entries[0].id1c != 'undefined') {
-            console.log("Обновление товара из IMPORT")
-            //Поиск группы и коннект
+            console.log("WARNING: Обновление товара из IMPORT")
             //Поиск группы и коннект
             if(data['Группы']) {
               if(Array.isArray(data['Группы'])) {
@@ -485,41 +737,48 @@ const createProduct = async (data = { }, category = {}, foldername2 = '') => {
 
 
             let noFormatString = (data['Картинка']) ? data['Картинка'] : null;
+            let arrayImages = [];
 
-            let arrayImages = []
-
-            if(typeof noFormatString == "string") {
-              noFormatString.split(',')
-              if(Array.isArray(noFormatString) && typeof noFormatString[0] != 'undefined')  {
-                arrayImages = [...noFormatString[0]];
+            if (typeof noFormatString === "string") {
+              noFormatString = noFormatString.split(',');
+              if (Array.isArray(noFormatString) && typeof noFormatString[0] !== 'undefined') {
+                arrayImages = [...noFormatString];
               }
             }
-            if(typeof arrayImages[0] == 'undefined') arrayImages.push(noFormatString)
+            if (typeof arrayImages[0] === 'undefined') arrayImages.push(noFormatString);
 
-            if(Array.isArray(arrayImages[0])) {
-              arrayImages = arrayImages[0]
+            if (Array.isArray(arrayImages[0])) {
+              arrayImages = arrayImages[0];
             }
-            let image = (noFormatString) ? fs.readFileSync(`/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/${foldername2}/${arrayImages[0]}`, (file) => file) : null;
 
-            if(data['Наименование']) {
+            if (data['Наименование']) {
               const updateEntry = await strapi.entityService.update('api::product.product', entries[0].id, {
                 data: {
                   id1c: data['Ид'],
-                  imgs: (image) ? await strapi.plugins['upload'].services.upload.upload(
-                    { data: {fileInfo: {}}, files: {
-                        path: (noFormatString) ? path.resolve(`/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/${foldername2}/${arrayImages[0]}`) : null, // Put your file path
-                        name: "${data['Картинка']",
-                        type: 'image/jpg'
-                      }}
-                  ) : null,
+                  imgs: await Promise.all(arrayImages.map(async (imagePath) => {
+                    if (imagePath) {
+                      const image = fs.readFileSync(`/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/${foldername2}/${imagePath}`, (file) => file);
+                      const uploadedImage = await strapi.plugins['upload'].services.upload.upload({
+                        data: { fileInfo: {} },
+                        files: {
+                          path: path.resolve(`/usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS/${foldername2}/${imagePath}`),
+                          name: imagePath,
+                          type: 'image/jpg'
+                        }
+                      });
+                      return uploadedImage[0];
+                    }
+                    return null;
+                  })),
                   categories: {
                     set: [...groupsToConnect]
                   }
                 },
               });
+
               if(arrayImages) {
                 console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!ТОВАР ОБНОВЛЕН IMPORT FILE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                console.log("Товар создан")
+                console.log("Товар ОБНОВЛЕН")
                 console.log("Путь до картинки")
                 console.log(arrayImages)
               }
@@ -533,7 +792,7 @@ const createProduct = async (data = { }, category = {}, foldername2 = '') => {
         }
 
       } catch(e) {
-        console.log(e)
+        console.log(await entries)
         console.log("Ошибка в работе с товаром!")
         resolve(false)
       }
@@ -555,19 +814,28 @@ const updateProduct = async (data = { }, itemId = 0, storeplace = 'Не назн
 
   return new Promise( async (resolve, reject) => {
     try {
+
       if(data['Наименование']) {
+
         if(Array.isArray(data['Цены']['Цена'])) {
+
           const updateEntry = await strapi.entityService.update('api::product.product', itemId, {
+
             data: {
               stock:(typeof data['Количество'] != 'undefined') ? data['Количество'] : '0',
               storeplace: (storeplace) ? `${storeplace}` : 'Не назначен',
               price:(typeof data['Цены']['Цена'][0]['ЦенаЗаЕдиницу'] != 'undefined') ? `${data['Цены']['Цена'][0]['ЦенаЗаЕдиницу']}` : '0',
               priceOpt: (typeof data['Цены']['Цена'][1]['ЦенаЗаЕдиницу'] != 'undefined') ? `${data['Цены']['Цена'][1]['ЦенаЗаЕдиницу']}` : '0',
             },
+
           });
-          console.log("=> Товар обновлен = ТИП: Цены и остатки: " + updateEntry.title)
+
+          console.log(" => Товар обновлен = ТИП: Цены и остатки: " + updateEntry.title)
+
           //if(await updateEntry) console.log(updateEntry)
+
         } else {
+
           const updateEntry = await strapi.entityService.update('api::product.product', itemId, {
             data: {
               stock:(typeof data['Количество'] != 'undefined') ? data['Количество'] : '0',
@@ -576,7 +844,9 @@ const updateProduct = async (data = { }, itemId = 0, storeplace = 'Не назн
               priceOpt: '',
             },
           });
+
           console.log("=> Товар обновлен = ТИП: Цены и остатки: " + updateEntry.toString())
+
           if(await updateEntry) {
             resolve(true)
           }
@@ -586,6 +856,7 @@ const updateProduct = async (data = { }, itemId = 0, storeplace = 'Не назн
       }
     } catch(e) {
       console.log(e)
+      console.log(entries)
       console.log("=>ОШИБКА: Товар НЕ обновлен = ТИП: Цены и остатки: ")
     }
   })

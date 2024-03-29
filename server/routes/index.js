@@ -18,7 +18,7 @@ module.exports = [
   {
     method: 'GET',
     path: '/new_files',
-    handler: 'file_cheker.checknew',
+    handler: 'file_cheker.checkNew',
     config: {
       auth: false,
       middlewares: [
