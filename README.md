@@ -40,15 +40,15 @@
 
 Все это ожидает такую иерархию в файлах на сервере: 
 
-Порты работы: 
-3000
-1338
+Порты работы:  \
+3000 \
+1338 \
 1337
-
-back: /usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS
-front: /usr/share/nginx/html/front/exchangeStrapi/index.php
-
-checkRouteFromPHP: /exchange?filename=you_name.zip
+\
+back: /usr/share/nginx/html/back/public/uploads/exchangeStrapi/tempXMLS \
+front: /usr/share/nginx/html/front/exchangeStrapi/index.php \
+\
+checkRouteFromPHP: /exchange?filename=you_name.zip \
 
 папку exchangeStrapi, вместе со всеми зависямостями ставим туда куда удобно, попутно, настраиваем сервер так, чтобы был доступ внутрь.
 Схема простая. Так как 1С = д***баеб и передает файлы в теле запроса потоково, JS с такого в полном ах..е. Мы будем использовать
